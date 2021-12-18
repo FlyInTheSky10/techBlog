@@ -1,0 +1,40 @@
+<%- include("components/head") -%>
+<body>
+    <div id="main">
+        <%- include("components/bar") -%>
+        <%- include("components/header") -%>
+        <div class="postlist-wrapper" style="opacity: 0; visibility: hidden;">
+            <%- include("components/sidebar") -%>
+            <div class="postlist">
+                <div class="post-wrapper">
+                    <a class="title bancolor"><%- post.title %></a>
+                    <div class="list-wrapper">
+                        <ul class="list">
+                            <% for (let i = 0; i < postList.length; ++i) { %>
+                                <li>
+                                    <% let hreflink = postList[i].fileName.substring(0, postList[i].fileName.length - 3); %>
+                                    <a href=<%- `"${config.rootpath}/${hreflink}/"` %>><%- postList[i].title %></a>
+                                </li>
+                            <% } %>
+                        </ul>
+                    </div>
+                </div>
+                <div class="button-wrapper">
+                    <% if (!lastPage) { %>
+                        <a id="nextpage" href=<%- `"${config.rootpath}/tag/${tagName}/page/${pageCode + 1}/"` %>>下一页</a>
+                    <% } %>
+                    <% if (pageCode > 1) { %>
+                        <%
+                            let prehref = `"${config.rootpath}/tag/${tagName}/page/${pageCode - 1}/"`;
+                            if (pageCode == 2) {
+                                prehref = `"${config.rootpath}/tag/${tagName}/"`;
+                            }
+                        %>
+                        <a id="previouspage" href=<%- prehref %>>上一页</a>
+                    <% } %>
+                </div>
+            </div>
+        </div>
+        <%- include("components/footer") -%>
+    </div>
+</body>

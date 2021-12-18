@@ -1,0 +1,19 @@
+{
+  "name": "flyblog",
+  "version": "1.0.0",
+  "main": "src/index.js",
+  "dependencies": {
+    "ejs": "^3.1.6",
+    "marked": "^4.0.5"
+  },
+  "devDependencies": {},
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "bin": {
+    "flyblog": "./src/index.js"
+  },
+  "scripts": {
+    "flyblog": "node ./src/index.js"
+  }
+}
