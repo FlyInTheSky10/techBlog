@@ -43,7 +43,7 @@ $ g++ -c fly.cpp
 $ g++ -c fly.cpp
 $ g++ fly.o -o fly
 ```
-
+<!-- more -->
 ## 其他
 
 编译选项：
