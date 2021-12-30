@@ -1,11 +1,11 @@
-```
+---
 title: Linux C++编程工具
 date: 2021-12-27 21:38
 categories:
 - Linux
 tags:
 - Linux
-```
+---
 
 # G++ 编译 C++
 
