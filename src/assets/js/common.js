@@ -170,7 +170,6 @@ function checkCode() { // 格式化 <code> 块
 			codeDOM.parentNode.style.setProperty("width", contentDOM.offsetWidth + "px");
 		} else {
 			codeDOM.style.setProperty("width", codeDOM.parentNode.offsetWidth + "px");
-			codeDOM.style.setProperty("border", "solid #eaeaea");
 		}
 		let tmp = codeDOM.innerHTML;
 		codeDOM.innerHTML = tmp.replace(/\\\_/g, "\_");
