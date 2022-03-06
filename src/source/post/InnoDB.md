@@ -5,6 +5,7 @@ categories:
 - 数据库
 tags:
 - InnoDB
+- 技术
 ---
 
 # InnoDB 体系结构

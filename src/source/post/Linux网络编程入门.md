@@ -6,6 +6,8 @@ categories:
 tags:
 - Linux
 - 网络编程
+- 计算机网络
+- 技术
 ---
 
 # 项目简介

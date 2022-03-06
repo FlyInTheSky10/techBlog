@@ -5,6 +5,7 @@ categories:
 - Go
 tags:
 - Go
+- 技术
 ---
 
 # Go 基础

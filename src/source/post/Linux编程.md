@@ -5,6 +5,7 @@ categories:
 - Linux
 tags:
 - Linux
+- 技术
 ---
 
 # G++ 编译 C++

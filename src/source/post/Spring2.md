@@ -6,6 +6,7 @@ categories:
 - Spring
 tags:
 - Spring
+- 技术
 ---
 
 # Spring IoC
