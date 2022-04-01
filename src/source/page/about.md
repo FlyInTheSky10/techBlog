@@ -2,6 +2,8 @@
 
 ---
 
+![Header](../static/images/about_header.jpg)
+
 FlyInTheSky，广东深圳某本科在读。
 
 Web 后端开发，服务端开发，地理爱好者，城市公交爱好者
