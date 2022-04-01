@@ -13,7 +13,7 @@ tags:
 
 # 架构
 
-![MySQL 架构](..\static\images\MySQL1.png)
+![MySQL 架构](../static/images/MySQL1.png)
 
 MySQL 分为 **Server 层**和**储存引擎层**。
 
@@ -74,7 +74,7 @@ redo log 即重做日志，binlog 即归档日志。
 
 InnoDB 的 redo log 是固定大小的，是一个循环结构。
 
-![redo log 循环结构](..\static\images\MySQL2.png)
+![redo log 循环结构](../static/images/MySQL2.png)
 
 - write pos: 当前记录的位置，是循环写的。
 - checkpoint: 当前需要擦除的位置，擦除后将记录更新写入磁盘。
@@ -104,13 +104,19 @@ WAL 技术即 Write-Ahead Logging，即先写日志，再写磁盘。(磁盘 I/O
 
 ### update 的两阶段提交
 
-![update 的两阶段提交](..\static\images\MySQL3.png)
+![update 的两阶段提交](../static/images/MySQL3.png)
 
 由图可见，最后三部将 redo log 写入拆成两个步骤，**prepare 和 commit，即两阶段提交。**
 
 两阶段提交可以保证两份日志同步，逻辑一致，即**一致性**。可用反证证明不拆分的两种情况都无法保证。
 
 **只保证一致性，不保证这一小段时间 redo log 还在 redo log buffer 里没有被刷到磁盘上的数据丢失。**
+
+# 锁
+
+## 全局锁
+
+
 
 # 事务隔离
 
