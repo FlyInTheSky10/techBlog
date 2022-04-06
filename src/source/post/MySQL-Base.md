@@ -9,7 +9,7 @@ tags:
 - 技术
 ---
 
-本文基本上为 [MySQL 实战 45 讲](https://time.geekbang.org/column/intro/100020801) 1-8 节内容，为学习笔记，主要涉及 MySQL 基础部分内容如锁、事务、索引等。
+本文基本上为 [MySQL 实战 45 讲](https://time.geekbang.org/column/intro/100020801) 1-15 节内容，为学习笔记，主要涉及 MySQL 基础部分内容如锁、事务、索引等。
 
 # 架构
 
@@ -84,6 +84,32 @@ InnoDB 的 redo log 是固定大小的，是一个循环结构。
 
 `innodb_flush_log_at_trx_commit`这个参数设置成1的时候， 表示每次事务的 redo log 都直接持久化到磁盘。**建议设置为1。**
 
+redo log 一般设置为 4 个文件、每个文件 1GB
+
+#### 刷脏页
+
+当内存数据页和硬盘数据页数据不一致时，称内存中的数据页为**脏页 (Dirty Page)**。
+
+> **刷脏页 (flush)** 的时机？
+
+1、redo log 满了，停止所有更新操作，checkpoint 往前推，走过区域 redo log 的脏页 flush到磁盘，留出空间写新的 redo log
+
+2、系统内存不足。需要新的数据页而内存不足，则应该将旧的数据页淘汰。
+
+3、空闲时期。
+
+4、MySQL 正常关闭时。
+
+正确设置 `innodb_io_capacity` 参数 (磁盘 I/O 能力指标，(建议设置成磁盘的IOPS。磁盘的IOPS可以通过 fio 工具来测试)) 可以使得不会刷脏页的时候刷得特别慢。
+
+InnoDB的刷盘速度参考两个因素：一个是脏页比例，一个是 redo log 写盘速度。
+
+参数 `innodb_max_dirty_pages_pct` 是脏页比例上限，默认值是75%。**平时要多关注脏页比例，不要让它经常接近75%。**脏页比例是通过`Innodb_buffer_pool_pages_dirty`/`Innodb_buffer_pool_pages_total`得到的
+
+`innodb_flush_neighbors` 参数控制 flush 脏页是否影响邻近页的 flush。**建议设置为0。**
+
+脏页刷到内存实质上与 redo log 无关。redo log 不能直接去更新硬盘数据页。
+
 ### bin log
 
 Server 层的日志即为 bin log。
@@ -111,6 +137,13 @@ WAL 技术即 Write-Ahead Logging，即先写日志，再写磁盘。(磁盘 I/O
 两阶段提交可以保证两份日志同步，逻辑一致，即**一致性**。可用反证证明不拆分的两种情况都无法保证。
 
 **只保证一致性，不保证这一小段时间 redo log 还在 redo log buffer 里没有被刷到磁盘上的数据丢失。**
+
+> MySQL怎么知道 bin log 是完整的?
+
+一个事务的 bin log 是有完整格式的： 
+
+- statement 格式的 bin log，最后会有 COMMIT
+- row 格式的 bin log，最后会有一个 XID event
 
 # 锁
 
@@ -340,3 +373,75 @@ B+ 树高取决于叶子树（数据行数）和 N 叉树的 N 。 **而 N 是�
 ## 索引下推
 
 MySQL 5.6 引入的**索引下推优化**（index condition pushdown)， 可以在索引遍历过程中，对索引中包含的字段先做判断，直接过滤掉不满足条件的记录，**减少回表次数**。
+
+## 索引选择
+
+InnoDB 不能知道满足条件的语句有多少条，只能通过一个**基数 (cardinality) **来估计扫描行数。**基数即为一个索引上不同值的个数**，可以使用 `show index` 方法，看到一个索引的基数。
+
+InnoDB 随机选择 N 个数据页，统计页面的不同值的平均数，然后得出这个索引的基数。
+
+当变更的数据行数超过 1/M 的时候，会自动触发重新做一次索引统计。
+
+`analyze table t` 命令，可以用来重新统计索引信息。
+
+采用 `force index` 可以强行选择一个索引。
+
+我们可以新建一个更合适的索引，来提供给优化器做选择，或删掉误用的索引。
+
+## 字符串索引
+
+**前缀索引**：可以定义一部分前缀作为索引。需要区分度高的前缀索引查找效率才高
+
+前缀索引会对覆盖索引造成影响。即使前缀索引将整个字符串包括，查找都会回到主键回表一次，因为系统不知道是否包含了整个字符串。
+
+**倒序索引**：字符串倒着存，再使用前缀索引来增加索引区分度。
+
+**Hash索引：**在表上再创建一个整数字段，来保存身份证的校验码
+
+## B+树空洞
+
+`innodb_file_per_table` 设置为 ON 时，使用 `drop table` 系统就会直接删除这个文 件，否则不会。
+
+数据删除只是打标签，会照成空洞，同理数据插入 (B+树页分裂) 和更新 (删除+插入)
+
+可以使用 `alter table A engine=InnoDB` 命令来**重建表**。此 DDL 不是 Online 的。
+
+重建表时 inplace 没有把数据挪动到临时表，是 一个原地操作，copy 则为强制拷贝表。
+
+`analyze table t` 其实不是重建表，只是对表的索引信息做重新统计，没有修改数据，这个过程中加了 MDL 读锁。
+
+# 缓存
+
+## change buffer
+
+需要更新数据页时，如果数据页当前不在内存中，不影响一致性的情况下，就将更新操作缓存在 **change buffer**，然后之后查询时，将数据页读入内存再通过 change buffer 来得到正确的数据页。
+
+change buffer 是可持久化的。在**共享表空间 ibdata1**。
+
+将 change buffer 应用到硬盘数据页的操作称为 **merge**，访问页会触发 merge，数据库也会定期 merge，数据库 shutdown 后也会 merge。
+
+merge 流程：
+
+- 从硬盘读入数据页
+- 在内存中查找这个数据页的 change buffer，然后依次修改内存中的数据页，此时数据页为脏页
+- 写 redo log，包含数据变更和 change buffer 的变更 
+
+change buffer 减少了硬盘 I/O，同时减少了数据页读入内存，减少了内存占用。
+
+change buffer 的大小，可以通过参数 `innodb_change_buffer_max_size` 来动态设置。这个参数设置为 50 的时候，表示 change buffer 的大小最多只能占用 buffer pool 的50%。
+
+**尽量使用普通索引而不是唯一索引，因为唯一索引修改完马上会查询，这样 change buffer 的优化就失效了。**
+
+## change buffer 和 redo log
+
+change buffer 的修改会记录进 redo log
+
+**redo log 主要节省的是随机写磁盘的IO消耗（转成顺序写），而change buffer主要节省的则是随机读磁盘的IO消耗。**
+
+如果掉电，已经持久化的 change buffer 已经 merge，不用恢复。
+
+对于没有持久化的 change buffer：使用 redo log 和 bin log 来恢复
+
+## redo log buffer
+
+redo log buffer 用来存 redo log
