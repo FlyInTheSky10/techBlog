@@ -514,3 +514,298 @@ make: 'kernel/kernel' is up to date.
 == Test   usertests: all tests == 
   usertests: all tests: OK 
 ```
+
+## Simplify copyin/copyinstr (hard)
+
+> Replace the body of copyin in kernel/vm.c with a call to copyin_new (defined in kernel/vmcopyin.c); do the same for copyinstr and copyinstr_new. Add mappings for user addresses to each process's kernel page table so that copyin_new and copyinstr_new work. You pass this assignment if usertests runs correctly and all the make grade tests pass.
+
+原来在内核态的 copyin，copyout 函数不能直接解引用用户态指针，现在将他们换成 copyin_new 和 copyinstr_new，需要修改 xv6 内核代码来实现在内核态直接解引用用户态指针。
+
+这样做相比原来 copyin 的实现的优势是，原来的 copyin 是通过软件模拟访问页表的过程获取物理地址的，而在内核页表内维护映射副本的话，可以利用 CPU 的硬件寻址功能进行寻址，效率更高并且可以受快表加速。
+
+基本思路是，内核态维护一个映射表对应于用户态，我们需要在每一处内核对用户页表进行修改的时候，将同样的修改也同步应用在进程的内核页表上，使得两个页表的程序段（0 到 PLIC 段）地址空间的映射同步。
+
+在 PLIC 之前还有一个 CLINT（核心本地中断器）的映射，该映射会与我们要 map 的程序内存冲突。查阅 xv6 book 的 Chapter 5 以及 start.c 可以知道 CLINT 仅在内核启动的时候需要使用到，而用户进程在内核态中的操作并不需要使用到该映射。
+
+那么我们只需要在全局内核页表中映射 CLINT 即可，其他的不需要映射，防止 remap。
+
+1、修改 vm.c 中映射 CLINT 相关
+
+```c
+// vm.c
+void
+kvminit()
+{
+  kernel_pagetable = kvm_new_pagetable();
+  kvmmap_p(kernel_pagetable, CLINT, CLINT, 0x10000, PTE_R | PTE_W); // 新增
+}
+void
+kvm_map_pagetable(pagetable_t pagetable) {
+  kvmmap_p(pagetable, UART0, UART0, PGSIZE, PTE_R | PTE_W);
+  kvmmap_p(pagetable, VIRTIO0, VIRTIO0, PGSIZE, PTE_R | PTE_W);
+  // kvmmap_p(pagetable, CLINT, CLINT, 0x10000, PTE_R | PTE_W); 每个进程就不用都映射 CLINT 了
+  kvmmap_p(pagetable, PLIC, PLIC, 0x400000, PTE_R | PTE_W);
+  kvmmap_p(pagetable, KERNBASE, KERNBASE, (uint64)etext-KERNBASE, PTE_R | PTE_X);
+  kvmmap_p(pagetable, (uint64)etext, (uint64)etext, PHYSTOP-(uint64)etext, PTE_R | PTE_W);
+  kvmmap_p(pagetable, TRAMPOLINE, (uint64)trampoline, PGSIZE, PTE_R | PTE_X);
+}
+```
+
+2、在 vm.c 中添加相关函数 (defs.h 中需要添加声明)
+
+```c
+// vm.c
+
+// 将 src 页表的一部分页映射关系拷贝到 dst 页表中。
+// 只拷贝页表项，不拷贝实际的物理页内存。
+// 成功返回0，失败返回 -1
+int
+kvmcopymappings(pagetable_t src, pagetable_t dst, uint64 start, uint64 sz) {
+  pte_t *pte;
+  uint64 pa, i;
+  uint flags;
+
+  for(i = PGROUNDUP(start); i < start + sz; i += PGSIZE) {
+    if((pte = walk(src, i, 0)) == 0)
+      panic("kvmcopymappings: pte should exist");
+    if((*pte & PTE_V) == 0)
+      panic("kvmcopymappings: page not present");
+    pa = PTE2PA(*pte);
+    // 不是用户页表，设置权限
+    // 必须设置该权限，RISC-V 中内核是无法直接访问用户页的。
+    flags = PTE_FLAGS(*pte) & ~PTE_U; 
+    if(mappages(dst, i, PGSIZE, pa, flags) != 0){
+      goto err;
+    }
+  }
+
+  return 0;
+
+  err:
+  uvmunmap(dst, 0, i / PGSIZE, 0); // 注意是 0，不释放实际内存页
+  return -1;
+}
+
+// 与 uvmdealloc 功能类似，将程序内存从 oldsz 缩减到 newsz。但区别在于不释放实际内存
+// 用于内核页表内程序内存映射与用户页表程序内存映射之间的同步
+uint64
+kuvmdealloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz)
+{
+  if(newsz >= oldsz)
+    return oldsz;
+
+  if(PGROUNDUP(newsz) < PGROUNDUP(oldsz)){
+    int npages = (PGROUNDUP(oldsz) - PGROUNDUP(newsz)) / PGSIZE;
+    uvmunmap(pagetable, PGROUNDUP(newsz), npages, 0); // 注意是 0，不释放实际内存页
+  }
+
+  return newsz;
+}
+```
+
+3、在 exec 中加入检查，防止程序内存超过 PLIC
+
+```c
+int
+exec(char *path, char **argv)
+{
+  char *s, *last;
+  int i, off;
+  uint64 argc, sz = 0, sp, ustack[MAXARG+1], stackbase;
+  struct elfhdr elf;
+  struct inode *ip;
+  struct proghdr ph;
+  pagetable_t pagetable = 0, oldpagetable;
+  struct proc *p = myproc();
+
+  begin_op();
+
+  if((ip = namei(path)) == 0){
+    end_op();
+    return -1;
+  }
+  ilock(ip);
+
+  // Check ELF header
+  if(readi(ip, 0, (uint64)&elf, 0, sizeof(elf)) != sizeof(elf))
+    goto bad;
+  if(elf.magic != ELF_MAGIC)
+    goto bad;
+
+  if((pagetable = proc_pagetable(p)) == 0)
+    goto bad;
+
+  // Load program into memory.
+  for(i=0, off=elf.phoff; i<elf.phnum; i++, off+=sizeof(ph)){
+    if(readi(ip, 0, (uint64)&ph, off, sizeof(ph)) != sizeof(ph))
+      goto bad;
+    if(ph.type != ELF_PROG_LOAD)
+      continue;
+    if(ph.memsz < ph.filesz)
+      goto bad;
+    if(ph.vaddr + ph.memsz < ph.vaddr)
+      goto bad;
+    uint64 sz1;
+    if((sz1 = uvmalloc(pagetable, sz, ph.vaddr + ph.memsz)) == 0)
+      goto bad;
+    if (sz1 >= PLIC) { // 限制
+      goto bad;
+    }
+    sz = sz1;
+}
+```
+
+4、同步映射
+后面的步骤就是在每个修改到进程用户页表的位置，都将相应的修改同步到进程内核页表中。一共要修改：fork()、exec()、growproc()、userinit()
+
+对于 init 进程，由于不像其他进程，init 不是 fork 得来的，所以需要在 userinit 中也添加同步映射的代码。
+
+```c
+// proc.c
+// Create a new process, copying the parent.
+// Sets up child kernel stack to return as if from fork() system call.
+int
+fork(void)
+{
+  ...
+
+  // Copy user memory from parent to child.
+  // 新增，同步映射
+  if(uvmcopy(p->pagetable, np->pagetable, p->sz) < 0 ||
+     kvmcopymappings(np->pagetable, np->kernel_pagetable, 0, p->sz) < 0){
+    freeproc(np);
+    release(&np->lock);
+    return -1;
+  }
+  np->sz = p->sz;
+
+  ...
+}
+// Grow or shrink user memory by n bytes.
+// Return 0 on success, -1 on failure.
+int
+growproc(int n)
+{
+  uint sz;
+  struct proc *p = myproc();
+
+  // 此处开始都有修改
+
+  sz = p->sz;
+  if(n > 0){
+    uint64 newsz;
+    if((newsz = uvmalloc(p->pagetable, sz, sz + n)) == 0) {
+      return -1;
+    }
+    if(kvmcopymappings(p->pagetable, p->kernel_pagetable, sz, n) != 0) {
+      uvmdealloc(p->pagetable, newsz, sz); 
+      return -1;
+    } // 同步
+    sz = newsz;
+  } else if(n < 0){
+    uvmdealloc(p->pagetable, sz, sz + n);
+    sz = kuvmdealloc(p->kernel_pagetable, sz, sz + n); // 同步
+  }
+  p->sz = sz;
+  return 0;
+}
+void
+userinit(void)
+{
+  struct proc *p;
+
+  p = allocproc();
+  initproc = p;
+
+  // allocate one user page and copy init's instructions
+  // and data into it.
+  uvminit(p->pagetable, initcode, sizeof(initcode));
+  p->sz = PGSIZE;
+  kvmcopymappings(p->pagetable, p->kernel_pagetable, 0, p->sz); // 同步
+
+  // prepare for the very first "return" from kernel to user.
+  p->trapframe->epc = 0;      // user program counter
+  p->trapframe->sp = PGSIZE;  // user stack pointer
+
+  safestrcpy(p->name, "initcode", sizeof(p->name));
+  p->cwd = namei("/");
+
+  p->state = RUNNABLE;
+
+  release(&p->lock);
+}
+```
+
+```c
+// exec.c
+int
+exec(char *path, char **argv)
+{
+
+  ...
+
+  // Save program name for debugging.
+  ...
+
+  uvmunmap(p->kernel_pagetable, 0, PGROUNDUP(oldsz)/PGSIZE, 0);
+  kvmcopymappings(pagetable, p->kernel_pagetable, 0, sz);
+
+  // Commit to the user image.
+  ...
+}
+```
+
+5、替换 copyin、copyinstr 实现
+
+```c
+// vm.c
+
+// 声明新函数原型
+int copyin_new(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len);
+int copyinstr_new(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max);
+
+// 将 copyin、copyinstr 改为转发到新函数
+int
+copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
+{
+  return copyin_new(pagetable, dst, srcva, len);
+}
+
+int
+copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
+{
+  return copyinstr_new(pagetable, dst, srcva, max);
+}
+```
+
+然后运行 `make grade`
+
+```shell
+== Test pte printout == 
+$ make qemu-gdb
+pte printout: OK (2.9s) 
+== Test answers-pgtbl.txt == answers-pgtbl.txt: FAIL 
+    Cannot read answers-pgtbl.txt
+== Test count copyin == 
+$ make qemu-gdb
+count copyin: OK (0.7s) 
+== Test usertests == 
+$ make qemu-gdb
+(115.7s) 
+== Test   usertests: copyin == 
+  usertests: copyin: OK 
+== Test   usertests: copyinstr1 == 
+  usertests: copyinstr1: OK 
+== Test   usertests: copyinstr2 == 
+  usertests: copyinstr2: OK 
+== Test   usertests: copyinstr3 == 
+  usertests: copyinstr3: OK 
+== Test   usertests: sbrkmuch == 
+  usertests: sbrkmuch: OK 
+== Test   usertests: all tests == 
+  usertests: all tests: OK 
+== Test time == 
+time: FAIL 
+    Cannot read time.txt
+Score: 60/66
+```
