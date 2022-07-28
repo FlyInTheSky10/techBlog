@@ -424,6 +424,18 @@ ecall（指令，硬件完成）->uservec（汇编）->usertrap（C）->(syscall
 2. SEPC寄存器的数值会被拷贝到PC寄存器（程序计数器）
 3. 重新打开中断
 
+**认识几个重要的RISC-V控制状态寄存器**
+
+- **stvec**：中断发生后PC跳转向的地址。
+
+- **sepc**：中断发生时的PC，在sret后PC跳转向sepc。
+
+- **scause**：描述中断原因。
+
+- **sscratch**：在中断处理最开始使用的寄存器，在xv6中断机制里保存着本进程trapframe的地址。
+
+- **sstatus**：状态寄存器，SIE字段是是否允许硬件中断，SPP字段是中断前的模式，在sret时将模式改为SPP。
+
 # gdb 调试方法
 
 在一个窗口执行
