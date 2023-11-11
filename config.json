@@ -3,7 +3,7 @@
     "subtitle": "a simple blog",
     "author": "FlyInTheSky",
     "description": "「不忘初心，方得始终」",
-    "rootpath": "https://blog.lyffly.com",
+    "rootpath": "https://flyblog.lyffly.com",
     "port": 3000,
     "pages": [
         {
